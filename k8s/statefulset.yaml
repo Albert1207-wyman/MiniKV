@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minikv
+
+spec:
+  serviceName: minikv-headless
+
+  replicas: 3
+
+  podManagementPolicy: Parallel
+
+  selector:
+    matchLabels:
+      app: minikv
+
+  template:
+    metadata:
+      labels:
+        app: minikv
+
+    spec:
+      initContainers:
+        - name: wait-for-peers
+          image: minikv:dev
+          imagePullPolicy: IfNotPresent
+
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+
+              echo "Waiting for MiniKV peer DNS..."
+
+              for host in \
+                minikv-0.minikv-headless.default.svc.cluster.local \
+                minikv-1.minikv-headless.default.svc.cluster.local \
+                minikv-2.minikv-headless.default.svc.cluster.local
+              do
+                echo "Waiting for ${host}"
+
+                until getent hosts "${host}" >/dev/null 2>&1
+                do
+                  sleep 1
+                done
+
+                echo "${host} resolved"
+              done
+
+              echo "All MiniKV peer DNS names are ready."
+
+      containers:
+        - name: minikv
+          image: minikv:dev
+          imagePullPolicy: IfNotPresent
+
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+
+          ports:
+            - name: client
+              containerPort: 9400
+              protocol: TCP
+
+            - name: raft
+              containerPort: 9300
+              protocol: UDP
+
+          volumeMounts:
+            - name: data
+              mountPath: /data
+
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+
+      spec:
+        accessModes:
+          - ReadWriteOnce
+
+        resources:
+          requests:
+            storage: 1Gi

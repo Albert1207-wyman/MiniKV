@@ -1,0 +1,58 @@
+# ================================
+# Build output
+# ================================
+build/
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+
+# ================================
+# Runtime / test database files
+# ================================
+.minikv-cluster/
+
+data/
+cluster/
+node0/
+node1/
+node2/
+replica0/
+raft_node0/
+raft_node1/
+raft_node2/
+
+bench_test_db/
+testdb/
+test_results/
+
+testdata/
+testdata_v2/
+
+benchmark_results.csv
+
+# LSM runtime files
+*.sst
+MANIFEST-*
+CURRENT
+CURRENT.tmp
+
+# Temporary files
+*.tmp
+
+# ================================
+# IDE / editor
+# ================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ================================
+# Misc
+# ================================
+gh_cli
+.gh_config/
+.ssh/

@@ -1,0 +1,54 @@
+services:
+  minikv-node0:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: minikv-node0
+    environment:
+      POD_NAME: minikv-node0
+      MINIKV_DEPLOYMENT: docker
+    ports:
+      - "9400:9400"
+    volumes:
+      - minikv-node0-data:/data
+    networks:
+      - minikv
+
+  minikv-node1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: minikv-node1
+    environment:
+      POD_NAME: minikv-node1
+      MINIKV_DEPLOYMENT: docker
+    ports:
+      - "9401:9401"
+    volumes:
+      - minikv-node1-data:/data
+    networks:
+      - minikv
+
+  minikv-node2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: minikv-node2
+    environment:
+      POD_NAME: minikv-node2
+      MINIKV_DEPLOYMENT: docker
+    ports:
+      - "9402:9402"
+    volumes:
+      - minikv-node2-data:/data
+    networks:
+      - minikv
+
+volumes:
+  minikv-node0-data:
+  minikv-node1-data:
+  minikv-node2-data:
+
+networks:
+  minikv:
+    driver: bridge
