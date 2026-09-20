@@ -1,109 +1,65 @@
 # MiniKV
 
-一个基于 **C++17** 实现的轻量级分布式 Key-Value 存储系统。
+一个基于 **C++17** 实现的轻量级分布式 KV 存储系统。
 
-MiniKV 底层采用 **LSM-Tree + WAL** 实现本地存储，上层通过 **Raft** 实现多节点日志复制和多数派提交，并使用 **Kubernetes StatefulSet + PVC** 部署 3 节点集群。
+核心技术：
 
-## 核心特性
-
-* C++17 / Linux Socket / epoll
-* TCP KV Server，支持 PUT / GET / DEL / PING
-* TCP 4-byte length-prefix framing，处理粘包/半包
-* MemTable + SkipList + Arena
-* WAL 崩溃恢复
-* SSTable + Bloom Filter + Index Block
-* VersionSet / Manifest / CURRENT
-* Background Compaction
-* Raft Leader Election / AppendEntries / Log Replication
-* Majority Commit
-* Leader 故障恢复与 Follower 日志追赶
-* Docker / Kubernetes 部署
-* StatefulSet + Headless Service + PVC
-
----
+```text
+C++17 / Linux / epoll
+        ↓
+     KV Server
+        ↓
+LSM-Tree + WAL
+        ↓
+  3-node Raft
+        ↓
+Docker / Kubernetes
+```
 
 ## Architecture
 
 ```text
-                    Client
-                      |
-                      | TCP
-                      v
-              +---------------+
-              |   KV Server   |
-              | epoll + worker|
-              +-------+-------+
-                      |
-              +-------+-------+
-              |               |
-             GET         PUT / DELETE
-              |               |
-              v               v
-           DBImpl       RaftNode::Propose
-              |               |
-              |          Raft Log Replication
-              |               |
-              |          Majority Commit
-              |               |
-              +-------+-------+
-                      |
-                      v
-                Apply to DB
-                      |
-                      v
-             MemTable + WAL
-                      |
-                      v
-                   SSTable
-                      |
-                      v
-                 Compaction
-```
-
-3 节点：
-
-```text
-minikv-0 <---- Raft UDP ----> minikv-1
-     ^                              |
-     |                              |
-     +----------- minikv-2 ---------+
+                         Client
+                           |
+                           | TCP
+                           v
+                  +------------------+
+                  |    KV Server     |
+                  |  epoll + worker  |
+                  +--------+---------+
+                           |
+                +----------+----------+
+                |                     |
+               GET                PUT / DELETE
+                |                     |
+                v                     v
+             DBImpl           RaftNode::Propose
+                |                     |
+                |                Raft Log
+                |                     |
+                |             Majority Commit
+                |                     |
+                +----------+----------+
+                           |
+                           v
+                    Apply to DB
+                           |
+                    +------+------+
+                    |             |
+                 MemTable        WAL
+                    |
+                    v
+                 SSTable
+                    |
+                    v
+                Compaction
 ```
 
 ---
 
-## Write Path
+## Storage
 
-PUT / DELETE：
-
-```text
-Client
-  ↓
-KV Server
-  ↓
-Leader
-  ↓
-RaftNode::Propose
-  ↓
-Append Log
-  ↓
-Majority Replication
-  ↓
-commit_index
-  ↓
-ApplyCommittedEntries
-  ↓
-DBImpl::Put / Delete
-  ↓
-WAL + MemTable
-  ↓
-SSTable / Compaction
-```
-
-GET 当前采用 **Leader-only** 策略，直接读取本地 DB，不经过 Raft Propose。
-
----
-
-## Storage Engine
+MiniKV 的本地存储采用 LSM-Tree：
 
 ```text
 Write
@@ -127,43 +83,58 @@ Higher Levels
 
 ```text
 MemTable
-  └─ SkipList + Arena
+├── SkipList
+└── Arena
 
 SSTable
-  ├─ Data Block
-  ├─ Index Block
-  ├─ Bloom Filter
-  └─ Footer
+├── Data Block
+├── Index Block
+├── Bloom Filter
+└── Footer
 
 VersionSet
-  ├─ Version
-  ├─ VersionEdit
-  ├─ Manifest
-  └─ CURRENT
+├── VersionEdit
+├── Manifest
+└── CURRENT
 ```
+
+WAL 用于本地崩溃恢复，Compaction 用于合并 SSTable、减少 L0 文件数量和读取压力。
 
 ---
 
 ## Raft
 
-当前集群：
+3 节点集群：
 
 ```text
-3 nodes
-majority = 2
+             Raft UDP
+       +--------+--------+
+       |        |        |
+       v        v        v
+    node0    node1    node2
+       \        |        /
+        +--- Majority ---+
+                |
+              Commit
+                |
+               Apply
 ```
 
-实现了：
+实现：
 
-* Leader Election
-* RequestVote
-* AppendEntries
-* Log Replication
-* Majority Commit
-* Leader Failure Recovery
-* Follower Catch-up
+```text
+Leader Election
+RequestVote
+AppendEntries
+Log Replication
+Majority Commit
+Leader Failure Recovery
+Follower Catch-up
+```
 
-Raft 控制面当前使用 UDP，客户端数据面使用 TCP。
+PUT / DELETE 经多数派提交后再应用到本地状态机。
+
+GET 当前采用 **Leader-only** 策略。
 
 ---
 
@@ -173,25 +144,188 @@ Raft 控制面当前使用 UDP，客户端数据面使用 TCP。
 
 ```text
 StatefulSet
-+
+    +
 Headless Service
-+
+    +
 PVC
 ```
 
-节点：
+部署 3 个有状态节点：
 
 ```text
-minikv-0
-minikv-1
-minikv-2
+Kubernetes
+│
+├── StatefulSet
+│   ├── minikv-0 ─── PVC
+│   ├── minikv-1 ─── PVC
+│   └── minikv-2 ─── PVC
+│
+├── Headless Service
+│       │
+│       └── Stable Pod DNS
+│
+└── Client Services
+        │
+        └── NodePort
 ```
 
-Raft Peer 使用稳定 Kubernetes DNS，不依赖固定 Pod IP。
+Raft 节点通过稳定 Pod DNS 通信，不依赖固定 Pod IP。
+
+故障恢复流程：
+
+```text
+Leader Pod Failure
+        ↓
+New Leader Election
+        ↓
+Old Data Recovery
+        ↓
+StatefulSet Rebuild
+        ↓
+PVC Remount
+        ↓
+Follower Log Catch-up
+        ↓
+Cluster Convergence
+```
 
 ---
 
-## Build
+# Performance
+
+所有数据来自当前开发环境和对应测试负载，仅用于当前实现的工程测试。
+
+## Compaction A/B
+
+在 **`sync=1`、相同测试负载**下：
+
+| 配置             | SSTable 数量 |    Random Read |
+| -------------- | ---------: | -------------: |
+| Compaction OFF |        784 | 50,945.2 ops/s |
+| Compaction ON  |          5 |  342,297 ops/s |
+
+```text
+SSTable:
+784 → 5
+
+Random Read:
+50,945.2 → 342,297 ops/s
+```
+
+结果表明，Compaction 会增加后台合并开销，但能显著减少 SSTable 数量，并改善后续读取效率。
+
+---
+
+## WAL Sync A/B
+
+对比 WAL 同步持久化开关：
+
+| 配置     |          单线程写入 |
+| ------ | -------------: |
+| sync=1 | 1,112.88 ops/s |
+| sync=0 | 80,089.6 ops/s |
+
+`sync=0` 减少了同步持久化带来的写入开销，该测试主要用于观察持久化可靠性与写入性能之间的权衡。
+
+---
+
+## Basic Storage Benchmark
+
+在当前测试负载下：
+
+| Benchmark        |          Result |
+| ---------------- | --------------: |
+| Sequential Write | 272,906.8 ops/s |
+| Random Read      | 380,002.2 ops/s |
+| Random Write     | 230,074.1 ops/s |
+
+Random Read：
+
+```text
+found = 100000 / 100000
+```
+
+---
+
+## Kubernetes GET Benchmark
+
+通过 Kubernetes **Pod `port-forward`** 访问当前 Leader：
+
+```text
+4 threads × 10,000 ops
+Total = 40,000
+```
+
+结果：
+
+```text
+success     = 40000
+failed      = 0
+error rate  = 0%
+
+QPS         = 1635.7
+
+avg         = 2.440567 ms
+p50         = 2.376344 ms
+p95         = 3.564650 ms
+p99         = 4.849034 ms
+```
+
+测试环境：
+
+```text
+VMware
+  ↓
+Ubuntu
+  ↓
+kind
+  ↓
+Kubernetes
+  ↓
+MiniKV 3-node cluster
+```
+
+---
+
+# Validation
+
+当前已经完成：
+
+| Environment            |      Result |
+| ---------------------- | ----------: |
+| Local 3-node Raft      | **30 / 30** |
+| Docker Integration     | **12 / 12** |
+| Kubernetes Integration | **15 / 15** |
+| **Total**              | **57 / 57** |
+
+关键验证场景：
+
+```text
+✓ Leader Election
+✓ PUT / GET / DELETE
+✓ Raft Log Replication
+✓ Majority Commit
+✓ Leader Failure
+✓ New Leader Election
+✓ Old Data Recovery
+✓ Follower Log Catch-up
+✓ Pod Rebuild
+✓ PVC Persistence
+✓ WAL Recovery
+✓ Cluster Convergence
+```
+
+测试入口：
+
+```bash
+./minikv_cluster.sh test
+./docker_test.sh
+./k8s/k8s_test.sh
+```
+
+---
+
+# Build
 
 ```bash
 git clone git@github.com:Albert1207-wyman/MiniKV.git
@@ -201,7 +335,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```
 
-生成：
+主要程序：
 
 ```text
 build/kv_server
@@ -211,99 +345,76 @@ build/kv_bench
 
 ---
 
-## Test
-
-### Local 3-node
-
-```bash
-./minikv_cluster.sh test
-```
+# Project Structure
 
 ```text
-PASS: 30
-FAIL: 0
-```
-
-### Docker
-
-```bash
-./docker_test.sh
-```
-
-```text
-PASS: 12
-FAIL: 0
-```
-
-### Kubernetes
-
-```bash
-./k8s/k8s_test.sh
-```
-
-```text
-PASS: 15
-FAIL: 0
-```
-
-覆盖：
-
-```text
-Leader Election
-PUT / GET / DELETE
-Replication
-Leader Failure
-Pod Rebuild
-PVC Persistence
-Data Recovery
-Log Convergence
+MiniKV/
+├── CMakeLists.txt
+├── Dockerfile
+├── docker-compose.yml
+├── docker_test.sh
+├── minikv_cluster.sh
+│
+├── include/
+│   ├── db.h
+│   ├── db_impl.h
+│   ├── memtable.h
+│   ├── skiplist.h
+│   ├── table.h
+│   ├── version_set.h
+│   ├── raft.h
+│   └── ...
+│
+├── src/
+│   ├── db_impl.cpp
+│   ├── memtable.cpp
+│   ├── table.cpp
+│   ├── version_set.cpp
+│   ├── raft.cpp
+│   ├── kv_server.cpp
+│   └── ...
+│
+├── tools/
+│   ├── kv_server_main.cpp
+│   ├── kv_client.cpp
+│   └── kv_bench.cpp
+│
+└── k8s/
+    ├── client-services.yaml
+    ├── headless-service.yaml
+    ├── statefulset.yaml
+    ├── start-minikv.sh
+    └── k8s_test.sh
 ```
 
 ---
 
-## Benchmark
+# Current Limitations
 
-当前开发环境下，本地存储测试结果：
-
-```text
-Sequential Write   ≈ 272K ops/s
-Random Read        ≈ 380K ops/s
-```
-
-Kubernetes GET Benchmark：
-
-```text
-4 threads × 10,000 ops
-Total: 40,000
-QPS:   1635.7
-Error: 0%
-
-avg: 2.440 ms
-p50: 2.376 ms
-p95: 3.565 ms
-p99: 4.849 ms
-```
-
-> Benchmark 结果与硬件、虚拟机、磁盘、编译参数和测试负载有关，仅用于当前实现的工程测试。
+* GET 当前采用 Leader-only
+* 未实现 Raft ReadIndex
+* 未实现 Leader Lease Read
+* 当前 Raft 控制面使用 UDP
+* 未完整实现 bottom-level tombstone elimination
+* 项目定位为学习与工程实践系统，不是生产级数据库
 
 ---
 
-## Project Focus
-
-MiniKV 主要实践：
+# Project Focus
 
 ```text
 C++17
-Linux Network Programming
-epoll / TCP / UDP
+Linux / epoll
+TCP / UDP
 LSM-Tree
 WAL
 SSTable
 Compaction
 Raft
 Distributed KV
+Docker
 Kubernetes
 Failure Recovery
 ```
 
-> MiniKV 是一个面向学习和工程实践的轻量级分布式 KV 存储系统，并非生产级数据库。
+> MiniKV：使用 C++17 构建的轻量级分布式 KV 存储系统，采用 LSM-Tree + WAL 完成本地存储与恢复，通过 3 节点 Raft 实现日志复制与多数派提交，并使用 Kubernetes 验证有状态部署与故障恢复。
